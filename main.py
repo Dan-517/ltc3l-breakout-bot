@@ -7,17 +7,27 @@ from threading import Thread
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
-# CONFIGURACIÓN
+# ========================
+# CONFIGURACIÓN INICIAL
+# ========================
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
 PAIR = "LTCUSDT"
 TRADE_AMOUNT = 11
-TRADE_TRIGGER_PERCENT = 5  # % de cambio en 1h para hacer breakout
+TRADE_TRIGGER_PERCENT = 5
 LOG_FILE = "data_log.csv"
+
+print("🔐 Checking API keys...", flush=True)
+if not API_KEY or not API_SECRET:
+    print("❌ API keys not loaded from environment!", flush=True)
+else:
+    print("✅ API keys loaded.", flush=True)
 
 client = Client(API_KEY, API_SECRET)
 
-# Servidor Flask para mantener activo
+# ========================
+# FLASK APP
+# ========================
 app = Flask(__name__)
 
 @app.route('/')
@@ -25,26 +35,31 @@ def home():
     return "Bot is running."
 
 def run_server():
+    print("🚀 Flask server starting on port 8080...", flush=True)
     app.run(host='0.0.0.0', port=8080)
 
-# Ping falso para que Render no duerma
+# ========================
+# FAKE PING TO KEEP ALIVE
+# ========================
 def keep_alive_ping():
     while True:
         try:
+            print("📡 Sending keep-alive ping...", flush=True)
             requests.get("https://ltc3l-breakout-bot.onrender.com")
-        except:
-            pass
-        time.sleep(600)  # cada 10 minutos
+        except Exception as e:
+            print("⚠️ Keep-alive ping failed:", e, flush=True)
+        time.sleep(600)
 
-# Obtener precio actual y cambio en 1 hora
+# ========================
+# GET PRICE
+# ========================
 def get_price():
     klines = client.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=2)
-    price_now = float(klines[-1][4])  # cierre actual
-    price_past = float(klines[0][4])  # cierre 1h atrás
+    price_now = float(klines[-1][4])
+    price_past = float(klines[0][4])
     change_1h = ((price_now - price_past) / price_past) * 100
     return price_now, change_1h
 
-# Guardar log CSV
 def log_to_csv(timestamp, price, change_1h, action):
     file_exists = os.path.isfile(LOG_FILE)
     with open(LOG_FILE, mode="a", newline="") as file:
@@ -53,31 +68,36 @@ def log_to_csv(timestamp, price, change_1h, action):
             writer.writerow(["Timestamp", "Price", "1h Change (%)", "Action"])
         writer.writerow([timestamp, f"{price:.2f}", f"{change_1h:.2f}", action])
 
-# Estrategia de breakout
+# ========================
+# MONITOR & TRADE
+# ========================
 def monitor_and_trade():
+    print("📊 Bot started. Waiting for market signals...", flush=True)
     while True:
         try:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             price, change_1h = get_price()
-            print(f"[{timestamp}] Price: ${price:.2f}, Change 1h: {change_1h:.2f}%")
+            print(f"[{timestamp}] Price: ${price:.2f}, 1h Change: {change_1h:.2f}%", flush=True)
 
             if change_1h > TRADE_TRIGGER_PERCENT:
-                print(f"🚀 Breakout detected! Simulated BUY with ${TRADE_AMOUNT}")
+                print(f"✅ Breakout detected! (Simulated BUY ${TRADE_AMOUNT})", flush=True)
                 action = "BUY (Simulated)"
             else:
-                print("📉 No breakout. Holding.")
+                print("⏸ No breakout. Holding.", flush=True)
                 action = "HOLD"
 
             log_to_csv(timestamp, price, change_1h, action)
 
         except BinanceAPIException as e:
-            print("Binance error:", e)
+            print("❌ BinanceAPIException:", e, flush=True)
         except Exception as e:
-            print("Unexpected error:", e)
+            print("❌ Unexpected error:", e, flush=True)
 
-        time.sleep(3600)  # cada 1 hora real (puedes bajar a 60 para testeo)
+        time.sleep(3600)
 
-# Lanzar todo como hilos
+# ========================
+# START EVERYTHING
+# ========================
 if __name__ == "__main__":
     Thread(target=run_server).start()
     Thread(target=keep_alive_ping).start()
