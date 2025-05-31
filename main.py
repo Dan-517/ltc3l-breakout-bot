@@ -332,52 +332,34 @@ def seconds_until_next_hour():
 
 def start_bot():
     """
-    Cada vez que el reloj UTC marque el cierre de una hora completa, ejecuta strategy_breakout().
-    Esto sincroniza al minuto '00:00' de cada hora.
+    Ejecuta strategy_breakout() de inmediato, luego duerme hasta el próximo cierre de vela 1h,
+    y a partir de ahí cada vez que se cierre una hora completa vuelve a llamar a strategy_breakout().
     """
-    print("🔄 Iniciando bucle de monitoreo (alineado a cierre de velas 1h)…", flush=True)
-    # Esperar hasta el próximo cierre de vela 1h
+    print("🔄 Iniciando bucle de monitoreo (primera ejecución inmediata)…", flush=True)
+    # 1) Primera llamada a la estrategia sin esperar
+    try:
+        print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] PRIMERA EJECUCIÓN INMEDIATA =======", flush=True)
+        strategy_breakout()
+    except Exception as e:
+        with open(ERRORS_LOG, "a") as ef:
+            ef.write(f"{datetime.utcnow().isoformat()} - ERROR primera ejecución: {e}\n")
+        print(f"⚠️ Excepción en primera ejecución: {e}", flush=True)
+
+    # 2) Dormir hasta el próximo cierre de vela 1h
     delay = seconds_until_next_hour()
     print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela (top of hour).", flush=True)
     time.sleep(delay)
 
+    # 3) Bucle continuo: cada vez que termine la hora, ejecutar estrategia
     while True:
         try:
-            # Al iniciar la hora, ejecutamos estrategia
-            print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}]  NUEVA VELA 1H CERRÓ  =======", flush=True)
+            print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] NUEVA VELA 1H CERRÓ =======", flush=True)
             strategy_breakout()
         except Exception as e:
             with open(ERRORS_LOG, "a") as ef:
                 ef.write(f"{datetime.utcnow().isoformat()} - Excepción en start_bot: {e}\n")
             print(f"⚠️ Excepción en start_bot: {e}", flush=True)
 
-        # Esperar hasta el siguiente cierre de vela 1h
         delay = seconds_until_next_hour()
         print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela.", flush=True)
         time.sleep(delay)
-
-if __name__ == "__main__":
-    # 1) Crear data_log.csv si no existe
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "w", newline="") as f:
-            csv.writer(f).writerow(["timestamp", "symbol", "price", "High_N", "Low_N", "ATR_14", "vol_current", "vol_avg_20h"])
-        print(f"🗎 Creado '{LOG_FILE}' con cabecera.", flush=True)
-
-    # 2) Crear trades_log.csv si no existe
-    if not os.path.exists(TRADES_LOG_FILE):
-        with open(TRADES_LOG_FILE, "w", newline="") as f:
-            csv.writer(f).writerow([
-                "timestamp", "action", "symbol", "price", "size", "stop_loss", "take_profit",
-                "balance_usdt_pre", "balance_sol_pre", "balance_usdt_post", "balance_sol_post", "pnl"
-            ])
-        print(f"🗎 Creado '{TRADES_LOG_FILE}' con cabecera.", flush=True)
-
-    # 3) Arrancar el bucle principal de trading en un hilo demonio
-    bot_thread = Thread(target=start_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-
-    # 4) Arrancar Flask en el hilo principal
-    port = int(os.environ.get("PORT", 8080))
-    print(f"✅ Arrancando Flask en el hilo principal en el puerto {port}", flush=True)
-    app.run(host="0.0.0.0", port=port)
