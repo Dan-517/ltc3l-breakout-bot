@@ -1,7 +1,8 @@
 services:
   - type: web
-    name: breakout-bot
+    name: crypto-breakout-bot
     env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    region: oregon     # o la región que prefieras
+    plan: starter      # plan gratuito (o el que uses)
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
