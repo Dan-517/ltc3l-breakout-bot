@@ -6,3 +6,8 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
     autoDeploy: true
+    envVars:
+      - key: PIONEX_API_KEY
+        sync: false
+      - key: PIONEX_API_SECRET
+        sync: false
