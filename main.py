@@ -41,14 +41,18 @@ def fetch_price():
         url = f"https://api.pionex.com/api/v1/market/ticker?symbol={SYMBOL}"
         response = requests.get(url, timeout=10)
         data = response.json()
+        # Imprimimos el JSON completo para depuración:
+        print("📦 Respuesta completa de Pionex:", data)
+
         if "data" in data and "price" in data["data"]:
             return float(data["data"]["price"])
         else:
-            print("⚠️ Respuesta inesperada de Pionex:", data)
+            print("⚠️ Formato inesperado en JSON de Pionex.")
             return None
     except Exception as e:
         print("⚠️ Error al obtener precio:", e)
         return None
+
 
 # === GUARDAR PRECIO EN CSV ===
 def log_price(price):
