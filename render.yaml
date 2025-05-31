@@ -2,7 +2,7 @@ services:
   - type: web
     name: crypto-breakout-bot
     env: python
-    region: oregon     # o la región que prefieras
-    plan: starter      # plan gratuito (o el que uses)
+    region: oregon     # O la región que prefieras
+    plan: starter      # Plan gratuito o el que uses
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
