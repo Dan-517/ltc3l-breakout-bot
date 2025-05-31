@@ -3,6 +3,6 @@ services:
     name: ltc3l-breakout-bot
     env: python
     plan: free
-    buildCommand: ""
-    startCommand: "python3 main.py"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
     autoDeploy: true
