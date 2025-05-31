@@ -1,13 +1,7 @@
 services:
   - type: web
-    name: ltc3l-breakout-bot
+    name: breakout-bot
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
-    autoDeploy: true
-    envVars:
-      - key: PIONEX_API_KEY
-        sync: false
-      - key: PIONEX_API_SECRET
-        sync: false
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
