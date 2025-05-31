@@ -27,23 +27,29 @@ def home():
 
 def fetch_price():
     """
-    Pide el ticker a la API pública de Pionex, imprime antes y después de la llamada
-    para depurar bloqueos. Retorna el precio como float si todo va bien.
+    Pide el ticker a la API pública de Pionex usando el endpoint correcto '/tickers?symbol=...'.
+    Imprime antes y después de la llamada para depurar. Retorna el precio (campo 'close') como float.
     """
     try:
-        # Print de diagnóstico que sale inmediatamente
-        print("🔍 [fetch_price] Llamando a Pionex API...", flush=True)
-        url = f"https://api.pionex.com/api/v1/market/ticker?symbol={SYMBOL}"
+        print("🔍 [fetch_price] Llamando a Pionex API (tickers)...", flush=True)
+        url = f"https://api.pionex.com/api/v1/market/tickers?symbol={SYMBOL}"
         response = requests.get(url, timeout=10)
         data = response.json()
         print("✅ [fetch_price] Respuesta recibida de Pionex.", flush=True)
         print("📦 Respuesta completa de Pionex:", data, flush=True)
 
-        if "data" in data and "price" in data["data"]:
-            return float(data["data"]["price"])
+        # 'tickers' es una lista; tomamos el primer elemento y su campo 'close'
+        if "tickers" in data and isinstance(data["tickers"], list) and len(data["tickers"]) > 0:
+            price_str = data["tickers"][0].get("close")
+            if price_str is not None:
+                return float(price_str)
+            else:
+                print("⚠️ No se encontró 'close' en el primer elemento de 'tickers'.", flush=True)
+                return None
         else:
-            print("⚠️ Formato inesperado en JSON de Pionex (no hay 'data.price').", flush=True)
+            print("⚠️ Formato inesperado en JSON de Pionex (no hay 'tickers' o está vacío).", flush=True)
             return None
+
     except Exception as e:
         print("⚠️ Error al obtener precio desde Pionex:", e, flush=True)
         return None
@@ -204,7 +210,7 @@ def start_bot(interval=60):
                 print(f"⚠️ A las {timestamp}, no se obtuvo precio válido.", flush=True)
 
             print(f"======= [FIN DE ITERACIÓN] =================================================\n", flush=True)
-            # Mensaje que comprueba que entramos al sleep, de modo que no parezca “estático”
+            # MenSAJE para saber que el bucle está dormido
             print(f"💤 Esperando {interval} segundos antes de la siguiente iteración…", flush=True)
         except Exception as ex:
             print("⚠️ Excepción en start_bot:", ex, flush=True)
