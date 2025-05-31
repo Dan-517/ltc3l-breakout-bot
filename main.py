@@ -4,11 +4,12 @@ import requests
 from flask import Flask
 from threading import Thread
 
-ASSET = "litecoin"
-TRADE_PAIR = "LTC3L/USDT"
-INVEST_AMOUNT = 11
-TP_PERCENT = 0.10
-SL_PERCENT = 0.05
+# Configuración
+ASSET_NAME = "litecoin"
+PAIR = "ltc3l"
+TRADE_AMOUNT = 11
+POLLING_INTERVAL = 600  # cada 10 minutos
+RENDER_URL = "https://ltc3l-breakout-bot.onrender.com"  # <- Pega tu URL exacta aquí si cambia
 
 app = Flask(__name__)
 
@@ -16,65 +17,43 @@ app = Flask(__name__)
 def home():
     return "Bot is running."
 
-def run_web():
+def run_server():
     app.run(host='0.0.0.0', port=8080)
 
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
+def keep_alive_ping():
+    while True:
+        try:
+            requests.get(RENDER_URL)
+        except:
+            pass
+        time.sleep(POLLING_INTERVAL)
 
-def get_price(asset=ASSET):
-    try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={asset}&vs_currencies=usd"
-        r = requests.get(url).json()
-        return r[asset]["usd"]
-    except Exception as e:
-        print("Error getting price:", e)
-        return None
+def get_price():
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={ASSET_NAME}&vs_currencies=usd&include_24hr_change=true&include_1hr_change=true"
+    response = requests.get(url)
+    data = response.json()
+    return data[ASSET_NAME]['usd'], data[ASSET_NAME]['usd_1h_change']
 
 def monitor_and_trade():
-    print("="*50)
-    print("🔁 Bot started. Monitoring market every 10 minutes.")
-    print(f"🔍 Watching {ASSET.upper()}, trading {TRADE_PAIR}, with ${INVEST_AMOUNT} per breakout.")
-    print("="*50)
-
-    prices = []
     while True:
-        price = get_price()
-        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            price, change_1h = get_price()
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{timestamp}] Price: ${price:.2f}")
 
-        if price:
-            prices.append(price)
-            if len(prices) > 6:
-                prices.pop(0)
-            print(f"[{now}] Price: ${price:.2f}")
+            if change_1h > 5:
+                print(f"📈 1h change: {change_1h:.2f}%")
+                print(f"🚀 SIMULATED TRADE ENTERED: Buying {PAIR.upper()} with ${TRADE_AMOUNT}")
+            else:
+                print(f"📉 No breakout. Holding...")
 
-            if len(prices) == 6:
-                change = (price - prices[0]) / prices[0]
-                print(f"📈 1h change: {change * 100:.2f}%")
+        except Exception as e:
+            print(f"Error fetching price: {e}")
 
-                if change >= 0.06:
-                    simulate_trade(price)
-                    prices.clear()
-                else:
-                    print("📉 No breakout. Holding...")
-        else:
-            print("⚠️ Could not fetch price.")
+        time.sleep(POLLING_INTERVAL)
 
-        print("-" * 50)
-        time.sleep(600)
-
-def simulate_trade(entry_price):
-    tp = entry_price * (1 + TP_PERCENT)
-    sl = entry_price * (1 - SL_PERCENT)
-    print("="*40)
-    print(f"🚀 SIMULATED TRADE ENTERED")
-    print(f"🕒 {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"💵 Entry Price: ${entry_price:.2f}")
-    print(f"🎯 Take Profit: ${tp:.2f}")
-    print(f"🛑 Stop Loss: ${sl:.2f}")
-    print(f"📊 Simulating with ${INVEST_AMOUNT} on {TRADE_PAIR}")
-    print("="*40)
-
-keep_alive()
-monitor_and_trade()
+# Inicia todo
+if __name__ == '__main__':
+    Thread(target=run_server).start()
+    Thread(target=keep_alive_ping).start()
+    monitor_and_trade()
