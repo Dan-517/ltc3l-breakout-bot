@@ -1,248 +1,383 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import os
 import requests
-from flask import Flask
+from flask import Flask, send_file
 from threading import Thread
 import time
-import sys
 
-# === CONFIGURACIÓN DE ENTORNO ===
+# === 1. CONFIG Y MÓDULO DE DATOS & LOGGING ===
+
 API_KEY = os.environ.get("PIONEX_API_KEY")
 API_SECRET = os.environ.get("PIONEX_API_SECRET")
 
-# === CONFIGURACIÓN DEL ASSET A MONITOREAR ===
-SYMBOL = "LTC3L_USDT"
+SYMBOL = "SOL_USDT"            # Par SOL/USDT
+INTERVAL = "60M"               # Velas de 1 hora
+LOOKBACK = 20                  # Ventana de ruptura: últimas 20 velas
+EMA_PERIOD = 200               # EMA de 200 periodos
+ATR_PERIOD = 14                # ATR de 14 periodos
+VOLUME_MULTIPLIER = 1.2        # Volumen_actual ≥ promedio_20h * 1.2
+ATR_SL_MULT = 0.5              # Stop‐loss = Low_N – ATR_14 * 0.5
+ATR_TP_MULT = 2.0              # Take‐profit = price + ATR_14 * 2.0
+RISK_PERCENT = 0.01            # Riesgo 1 % del balance por operación
+
 LOG_FILE = "data_log.csv"
-
-# === ARCHIVO DE TRADES (para simulación de estrategia) ===
 TRADES_LOG_FILE = "trades_log.csv"
+ERRORS_LOG = "errors.log"
 
-# === FLASK APP PARA MANTENER VIVO EL SERVICIO EN RENDER ===
 app = Flask("")
 
 @app.route("/")
 def home():
-    return "Bot activo y funcionando."
+    return "Bot de Breakout SOL/USDT activo."
 
-def fetch_price():
+@app.route("/download/data")
+def download_data():
+    return send_file(LOG_FILE, as_attachment=True)
+
+@app.route("/download/trades")
+def download_trades():
+    return send_file(TRADES_LOG_FILE, as_attachment=True)
+
+
+def fetch_klines(symbol, interval, limit=210):
     """
-    Pide el ticker a la API pública de Pionex usando el endpoint correcto '/tickers?symbol=...'.
-    Imprime antes y después de la llamada para depurar. Retorna el precio (campo 'close') como float.
+    Obtiene las últimas `limit` velas del par `symbol` con intervalo `interval`.
+    Retorna la lista de diccionarios:
+      { "time": ..., "open": "...", "close": "...", "high": "...", "low": "...", "volume": "..." }
     """
     try:
-        print("🔍 [fetch_price] Llamando a Pionex API (tickers)...", flush=True)
-        url = f"https://api.pionex.com/api/v1/market/tickers?symbol={SYMBOL}"
+        url = f"https://api.pionex.com/api/v1/market/klines?symbol={symbol}&interval={interval}&limit={limit}"
         response = requests.get(url, timeout=10)
         data = response.json()
-        print("✅ [fetch_price] Respuesta recibida de Pionex.", flush=True)
-        print("📦 Respuesta completa de Pionex:", data, flush=True)
-
-        # 'tickers' es una lista; tomamos el primer elemento y su campo 'close'
-        if "tickers" in data and isinstance(data["tickers"], list) and len(data["tickers"]) > 0:
-            price_str = data["tickers"][0].get("close")
-            if price_str is not None:
-                return float(price_str)
-            else:
-                print("⚠️ No se encontró 'close' en el primer elemento de 'tickers'.", flush=True)
-                return None
+        if data.get("result") and "klines" in data["data"]:
+            return data["data"]["klines"]
         else:
-            print("⚠️ Formato inesperado en JSON de Pionex (no hay 'tickers' o está vacío).", flush=True)
-            return None
-
+            raise ValueError(f"fetch_klines: JSON inesperado o sin 'klines': {data}")
     except Exception as e:
-        print("⚠️ Error al obtener precio desde Pionex:", e, flush=True)
+        with open(ERRORS_LOG, "a") as ef:
+            ef.write(f"{datetime.utcnow().isoformat()} - ERROR fetch_klines: {e}\n")
         return None
 
-def log_price(price):
-    """
-    Escribe en data_log.csv una línea con timestamp, símbolo y precio.
-    También imprime en consola la línea para saber que efectivamente guardó.
-    """
-    with open(LOG_FILE, "a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([datetime.utcnow().isoformat(), SYMBOL, f"{price:.8f}"])
-    print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] {SYMBOL} = {price:.8f} USDT", flush=True)
 
-# === ESTRUCTURAS PARA SIMULAR PORTAFOLIO Y ESTRATEGIA (BREAKOUT APALANCADO) ===
-balance_usdt = 1000.0
-balance_ltc3l = 0.0
+def log_price_entry(timestamp, symbol, price, High_N, Low_N, ATR_14, volume_recent, volume_avg):
+    """
+    Registra en data_log.csv una fila con:
+      timestamp, symbol, price_entry, High_N, Low_N, ATR_14, volume_actual, volume_avg_20h
+    """
+    with open(LOG_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            timestamp, symbol,
+            f"{price:.8f}",
+            f"{High_N:.8f}",
+            f"{Low_N:.8f}",
+            f"{ATR_14:.8f}",
+            f"{volume_recent:.8f}",
+            f"{volume_avg:.8f}"
+        ])
+    print(f"[{timestamp}] LOG_PRICE: {symbol} @ {price:.8f} | High_N={High_N:.8f}, Low_N={Low_N:.8f}, ATR_14={ATR_14:.8f}, Vol={volume_recent:.2f}/{volume_avg:.2f}", flush=True)
+
+
+def write_trade(action, symbol, price, size,
+                sl, tp,
+                balance_usdt_pre, balance_sol_pre,
+                balance_usdt_post, balance_sol_post,
+                pnl):
+    """
+    Registra en trades_log.csv cada operación (BUY o SELL).
+    Columns:
+      timestamp, action, symbol, price, size, stop_loss, take_profit,
+      balance_usdt_pre, balance_sol_pre, balance_usdt_post, balance_sol_post, pnl
+    """
+    with open(TRADES_LOG_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            datetime.utcnow().isoformat(),
+            action,
+            symbol,
+            f"{price:.8f}",
+            f"{size:.8f}",
+            f"{sl:.8f}",
+            f"{tp:.8f}",
+            f"{balance_usdt_pre:.8f}",
+            f"{balance_sol_pre:.8f}",
+            f"{balance_usdt_post:.8f}",
+            f"{balance_sol_post:.8f}",
+            f"{pnl:.8f}"
+        ])
+    print(f"💰 TRADE {action}: {symbol} size={size:.8f} @ {price:.8f} | SL={sl:.8f}, TP={tp:.8f}, PnL={pnl:.8f}", flush=True)
+
+
+# ---------------------------------------
+# 2. MÓDULO DE ESTRATEGIA
+# ---------------------------------------
+
+balance_usdt = 1000.0       # Capital inicial en USDT simulado
+balance_sol = 0.0           # Cantidad de SOL en posición simulada
 open_position = False
 entry_price = 0.0
-entry_amount = 0.0
+entry_size = 0.0
+stop_loss = 0.0
+take_profit = 0.0
 
-window_size = 5
-take_profit_pct = 0.02
-stop_loss_pct = 0.01
-liquidation_pct = 1/3
+def calculate_SMA(data_list):
+    return sum(data_list) / len(data_list)
 
-recent_prices = []
-
-def write_trade(action, price, amount,
-                balance_usdt_pre, balance_ltc3l_pre,
-                balance_usdt_post, balance_ltc3l_post,
-                profit_loss):
+def calculate_EMA(closes, period):
     """
-    Registra cada operación simulada en trades_log.csv.
+    Calcula la EMA de `period` para la lista de precios `closes`.
+    Suponemos que len(closes) >= period.
     """
-    timestamp = datetime.utcnow().isoformat()
-    with open(TRADES_LOG_FILE, "a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            timestamp,
-            action,
-            f"{price:.8f}",
-            f"{amount:.8f}",
-            f"{balance_usdt_pre:.8f}",
-            f"{balance_ltc3l_pre:.8f}",
-            f"{balance_usdt_post:.8f}",
-            f"{balance_ltc3l_post:.8f}",
-            f"{profit_loss:.8f}"
-        ])
+    sma = sum(closes[0:period]) / period
+    ema = sma
+    alpha = 2 / (period + 1)
+    for price in closes[period:]:
+        ema = alpha * price + (1 - alpha) * ema
+    return ema
 
-def strategy_engine(current_price):
+def calculate_ATR(klines, period):
     """
-    Motor de estrategia de breakout con apalancamiento 3×.
-    - Si no hay posición: verifica si current_price rompe el máximo de las últimas window_size iteraciones.
-      Si rompe, compra todo el capital simulado (USDT) en LTC3L y registra BUY.
-    - Si hay posición: comprueba TP, SL o liquidación y cierra la posición si corresponde.
+    Calcula el ATR de `period` para las velas `klines` que ya incluyan al menos period+1 elementos.
+    klines: lista de diccionarios con keys "high", "low", "close". 
+    Retorna ATR simple (promedio de TRs) de los últimos `period` periodos.
     """
-    global balance_usdt, balance_ltc3l, open_position, entry_price, entry_amount
+    tr_list = []
+    # Convertir cadenas a floats
+    highs = [float(k["high"]) for k in klines]
+    lows = [float(k["low"]) for k in klines]
+    closes = [float(k["close"]) for k in klines]
+    for i in range(-period, 0):
+        prev_close = closes[i - 1]
+        current_high = highs[i]
+        current_low = lows[i]
+        tr = max(
+            current_high - current_low,
+            abs(current_high - prev_close),
+            abs(current_low - prev_close)
+        )
+        tr_list.append(tr)
+    return sum(tr_list) / period
 
+def strategy_breakout():
+    """
+    Lógica de estrategia de breakout en SOL/USDT cada cierre de vela de 1h.
+    1) Descarga últimas 210 velas de 1h.
+    2) Calcula High_N, Low_N basados en últimas LOOKBACK velas anteriores al cierre actual.
+    3) Calcula ATR_14, EMA_200 y volumen promedio de últimas 20 velas.
+    4) Si no hay posición abierta, evalúa condiciones de entrada:
+         - price_now > High_N
+         - price_now > EMA_200
+         - vol_actual >= vol_avg_20h * VOLUME_MULTIPLIER
+       Si cumple, abre posición simulated BUY.
+    5) Si hay posición abierta, gestiona SL/TP/trailing stop:
+         - Si price_now <= stop_loss → vende (cerrar posición).
+         - Si price_now >= take_profit → vende.
+         - Opcional: actualizar trailing stop si price sube +1 ATR.
+    6) Registra en CSV cada acción.
+    """
+    global balance_usdt, balance_sol, open_position, entry_price, entry_size, stop_loss, take_profit
+
+    klines = fetch_klines(SYMBOL, INTERVAL, limit=210)
+    if klines is None or len(klines) < EMA_PERIOD + 1:
+        print("⚠️ strategy_breakout: No se obtuvieron suficientes velas para calcular indicadores.", flush=True)
+        return
+
+    # Cada elemento k es: { "time": ..., "open": "...", "close": "...", "high": "...", "low": "...", "volume": "..." }
+    # Convertir a listas de floats
+    closes = [float(k["close"]) for k in klines]
+    highs = [float(k["high"]) for k in klines]
+    lows = [float(k["low"]) for k in klines]
+    volumes = [float(k["volume"]) for k in klines]
+
+    # Índice del último cierre de vela
+    last_idx = -1
+
+    # High_N y Low_N basados en las últimas LOOKBACK velas anteriores al cierre actual
+    # Si klines[-1] es la vela que acaba de cerrar, entonces tomamos klines[-LOOKBACK-1 : -1]
+    window_highs = highs[-LOOKBACK-1:-1]
+    window_lows = lows[-LOOKBACK-1:-1]
+    High_N = max(window_highs)
+    Low_N = min(window_lows)
+
+    # Volumen: el más reciente es volumes[-1], promedio de las LOOKBACK anteriores: volumes[-LOOKBACK-1 : -1]
+    volume_recent = volumes[-1]
+    volume_avg_20h = sum(volumes[-LOOKBACK-1:-1]) / LOOKBACK
+
+    # ATR_14: necesitamos al menos ATR_PERIOD + 1 velas; usamos las últimas ATR_PERIOD+1: klines[-(ATR_PERIOD+1):]
+    ATR_14 = calculate_ATR(klines[-(ATR_PERIOD+1):], ATR_PERIOD)
+
+    # EMA_200: usar los últimos EMA_PERIOD+? valores (al menos EMA_PERIOD + (len(closes)-EMA_PERIOD) para recorrido)
+    # Para simplicidad, calculamos el EMA200 usando las últimas EMA_PERIOD+10 velas si hay disponibles; aquí usamos closes[-(EMA_PERIOD+10):]
+    closes_for_ema = closes[-(EMA_PERIOD + 10):] if len(closes) >= EMA_PERIOD + 10 else closes[-EMA_PERIOD:]
+    EMA_200 = calculate_EMA(closes_for_ema, EMA_PERIOD)
+
+    # Precio de entrada / cierre actual (ultimo close)
+    price_now = closes[-1]
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Loguear precios e indicadores
+    log_price_entry(timestamp, SYMBOL, price_now, High_N, Low_N, ATR_14, volume_recent, volume_avg_20h)
+
+    # ==== SI NO HAY POSICIÓN ABIERTA: evaluar entrada ====
     if not open_position:
-        recent_prices.append(current_price)
-        if len(recent_prices) > window_size:
-            recent_prices.pop(0)
-            max_prev = max(recent_prices[:-1])
-            threshold = max_prev
-            if current_price > threshold:
-                entry_amount = balance_usdt / current_price
-                balance_usdt_pre = balance_usdt
-                balance_ltc3l = entry_amount
-                balance_usdt = 0.0
-                entry_price = current_price
-                open_position = True
+        if (
+            price_now > High_N
+            and price_now > EMA_200
+            and volume_recent >= volume_avg_20h * VOLUME_MULTIPLIER
+        ):
+            # Calcular stop_loss y take_profit basados en ATR
+            stop_loss = Low_N - ATR_14 * ATR_SL_MULT
+            take_profit = price_now + ATR_14 * ATR_TP_MULT
 
-                write_trade(
-                    action="BUY",
-                    price=current_price,
-                    amount=entry_amount,
-                    balance_usdt_pre=balance_usdt_pre,
-                    balance_ltc3l_pre=0.0,
-                    balance_usdt_post=balance_usdt,
-                    balance_ltc3l_post=balance_ltc3l,
-                    profit_loss=0.0
-                )
-                print(f"💼 [Estrategia] Compré {entry_amount:.8f} LTC3L a {current_price:.4f} USDT (breakout).", flush=True)
-    else:
-        tp_price = entry_price * (1 + take_profit_pct)
-        sl_price = entry_price * (1 - stop_loss_pct)
-        liquidation_price = entry_price * (1 - liquidation_pct)
+            # Calcular tamaño de posición para arriesgar ≈ RISK_PERCENT * balance_usdt
+            risk_amount = balance_usdt * RISK_PERCENT
+            distance_to_sl = price_now - stop_loss
+            if distance_to_sl <= 0:
+                print("⚠️ strategy_breakout: distance_to_sl <= 0, no abro posición.", flush=True)
+                return
+            size = risk_amount / distance_to_sl  # cantidad de SOL a comprar
 
-        if current_price <= liquidation_price:
             balance_usdt_pre = balance_usdt
-            balance_ltc3l_pre = balance_ltc3l
+            balance_sol_pre = balance_sol
+            balance_sol = size
             balance_usdt = 0.0
-            balance_ltc3l = 0.0
-            profit = - (entry_amount * entry_price)
+            entry_price = price_now
+            entry_size = size
+            open_position = True
 
             write_trade(
-                action="LIQUIDACIÓN",
-                price=current_price,
-                amount=entry_amount,
+                action="BUY",
+                symbol=SYMBOL,
+                price=price_now,
+                size=size,
+                sl=stop_loss,
+                tp=take_profit,
                 balance_usdt_pre=balance_usdt_pre,
-                balance_ltc3l_pre=balance_ltc3l_pre,
+                balance_sol_pre=balance_sol_pre,
                 balance_usdt_post=balance_usdt,
-                balance_ltc3l_post=balance_ltc3l,
-                profit_loss=profit
+                balance_sol_post=balance_sol,
+                pnl=0.0
             )
+        else:
+            print(f"🔍 [{timestamp}] No cumple condiciones de entrada. price={price_now:.4f}, High_N={High_N:.4f}, EMA200={EMA_200:.4f}, vol={volume_recent:.2f}/{volume_avg_20h:.2f}", flush=True)
+
+    # ==== SI YA HAY POSICIÓN ABIERTA: gestionar SL/TP / trailing ====
+    else:
+        balance_usdt_pre = balance_usdt
+        balance_sol_pre = balance_sol
+
+        # Salir por stop-loss
+        if price_now <= stop_loss:
+            pnl = (price_now - entry_price) * entry_size
+            balance_usdt = entry_size * price_now
+            balance_sol = 0.0
             open_position = False
-            entry_price = 0.0
-            entry_amount = 0.0
-
-            print(f"🛑 [Estrategia] ¡Liquidación! Precio {current_price:.4f}. Pérdida total = {profit:.4f} USDT.", flush=True)
-
-        elif current_price >= tp_price or current_price <= sl_price:
-            balance_usdt_pre = balance_usdt
-            balance_ltc3l_pre = balance_ltc3l
-            close_amount = balance_ltc3l
-            balance_usdt = close_amount * current_price
-            balance_ltc3l = 0.0
-            profit = balance_usdt - (entry_amount * entry_price)
 
             write_trade(
                 action="SELL",
-                price=current_price,
-                amount=close_amount,
+                symbol=SYMBOL,
+                price=price_now,
+                size=entry_size,
+                sl=stop_loss,
+                tp=take_profit,
                 balance_usdt_pre=balance_usdt_pre,
-                balance_ltc3l_pre=balance_ltc3l_pre,
+                balance_sol_pre=balance_sol_pre,
                 balance_usdt_post=balance_usdt,
-                balance_ltc3l_post=balance_ltc3l,
-                profit_loss=profit
+                balance_sol_post=balance_sol,
+                pnl=pnl
             )
+
+        # Salir por take-profit
+        elif price_now >= take_profit:
+            pnl = (price_now - entry_price) * entry_size
+            balance_usdt = entry_size * price_now
+            balance_sol = 0.0
             open_position = False
-            entry_price = 0.0
-            entry_amount = 0.0
 
-            etiqueta = "TP" if current_price >= tp_price else "SL"
-            print(f"✂️ [Estrategia] {etiqueta}. Vendí {close_amount:.8f} LTC3L a {current_price:.4f} USDT; PnL = {profit:.4f} USDT.", flush=True)
+            write_trade(
+                action="SELL",
+                symbol=SYMBOL,
+                price=price_now,
+                size=entry_size,
+                sl=stop_loss,
+                tp=take_profit,
+                balance_usdt_pre=balance_usdt_pre,
+                balance_sol_pre=balance_sol_pre,
+                balance_usdt_post=balance_usdt,
+                balance_sol_post=balance_sol,
+                pnl=pnl
+            )
+
+        # Trailing stop: si price sube +1 ATR sobre entrada, actualizar stop a price_now - ATR*0.75
         else:
-            print(f"🔒 [Estrategia] Posición abierta. Precio actual {current_price:.4f}, esperando TP/SL.", flush=True)
+            if price_now >= entry_price + ATR_14:
+                new_sl = price_now - ATR_14 * 0.75
+                if new_sl > stop_loss:
+                    stop_loss = new_sl
+                    print(f"🔄 [TRAILING STOP] Nueva SL actualizada a {stop_loss:.4f}", flush=True)
+            else:
+                print(f"🔒 [POSICIÓN ABIERTA] No se alcanza SL/TP. price={price_now:.4f}, SL={stop_loss:.4f}, TP={take_profit:.4f}", flush=True)
 
-def start_bot(interval=60):
+
+# ---------------------------------------
+# 3. LOOP PRINCIPAL + FLASK
+# ---------------------------------------
+
+def seconds_until_next_hour():
+    now = datetime.utcnow()
+    next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return (next_hour - now).total_seconds()
+
+def start_bot():
     """
-    Bucle infinito que cada `interval` segundos:
-      1) Imprime inicio de iteración.
-      2) Ejecuta fetch_price → log_price → strategy_engine.
-      3) Imprime “Esperando X segundos…” y duerme `interval`.
+    Cada vez que el reloj UTC marque el cierre de una hora completa, ejecuta strategy_breakout().
+    Esto sincroniza al minuto '00:00' de cada hora.
     """
-    print("🔄 Iniciando bucle de monitoreo y simulación (start_bot)…", flush=True)
+    print("🔄 Iniciando bucle de monitoreo (alineado a cierre de velas 1h)…", flush=True)
+    # Esperar hasta el próximo cierre de vela 1h
+    delay = seconds_until_next_hour()
+    print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela (top of hour).", flush=True)
+    time.sleep(delay)
+
     while True:
         try:
-            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n======= [{timestamp}] INICIO DE ITERACIÓN OBTENIENDO PRECIO =======", flush=True)
+            # Al iniciar la hora, ejecutamos estrategia
+            print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}]  NUEVA VELA 1H CERRÓ  =======", flush=True)
+            strategy_breakout()
+        except Exception as e:
+            with open(ERRORS_LOG, "a") as ef:
+                ef.write(f"{datetime.utcnow().isoformat()} - Excepción en start_bot: {e}\n")
+            print(f"⚠️ Excepción en start_bot: {e}", flush=True)
 
-            price = fetch_price()
-            if price is not None:
-                log_price(price)
-                strategy_engine(price)
-            else:
-                print(f"⚠️ A las {timestamp}, no se obtuvo precio válido.", flush=True)
-
-            print(f"======= [FIN DE ITERACIÓN] =================================================\n", flush=True)
-            # MenSAJE para saber que el bucle está dormido
-            print(f"💤 Esperando {interval} segundos antes de la siguiente iteración…", flush=True)
-        except Exception as ex:
-            print("⚠️ Excepción en start_bot:", ex, flush=True)
-
-        time.sleep(interval)
+        # Esperar hasta el siguiente cierre de vela 1h
+        delay = seconds_until_next_hour()
+        print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela.", flush=True)
+        time.sleep(delay)
 
 if __name__ == "__main__":
     # 1) Crear data_log.csv si no existe
     if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(["timestamp", "symbol", "price"])
-        print(f"🗎 Creado archivo '{LOG_FILE}' con cabecera.", flush=True)
+        with open(LOG_FILE, "w", newline="") as f:
+            csv.writer(f).writerow(["timestamp", "symbol", "price", "High_N", "Low_N", "ATR_14", "vol_current", "vol_avg_20h"])
+        print(f"🗎 Creado '{LOG_FILE}' con cabecera.", flush=True)
 
     # 2) Crear trades_log.csv si no existe
     if not os.path.exists(TRADES_LOG_FILE):
-        with open(TRADES_LOG_FILE, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                "timestamp", "action", "price", "amount",
-                "balance_usdt_pre", "balance_ltc3l_pre",
-                "balance_usdt_post", "balance_ltc3l_post",
-                "profit_loss"
+        with open(TRADES_LOG_FILE, "w", newline="") as f:
+            csv.writer(f).writerow([
+                "timestamp", "action", "symbol", "price", "size", "stop_loss", "take_profit",
+                "balance_usdt_pre", "balance_sol_pre", "balance_usdt_post", "balance_sol_post", "pnl"
             ])
-        print(f"🗎 Creado archivo '{TRADES_LOG_FILE}' con cabecera.", flush=True)
+        print(f"🗎 Creado '{TRADES_LOG_FILE}' con cabecera.", flush=True)
 
-    # 3) Arrancar el bucle principal en un hilo demonio
-    bot_thread = Thread(target=start_bot, args=(60,))
+    # 3) Arrancar el bucle principal de trading en un hilo demonio
+    bot_thread = Thread(target=start_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
-    # 4) Arrancar Flask en el hilo principal (app.run bloquea aquí)
+    # 4) Arrancar Flask en el hilo principal
     port = int(os.environ.get("PORT", 8080))
     print(f"✅ Arrancando Flask en el hilo principal en el puerto {port}", flush=True)
     app.run(host="0.0.0.0", port=port)
