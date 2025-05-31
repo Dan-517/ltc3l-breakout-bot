@@ -63,23 +63,21 @@ def log_price(price):
 
 # === LOOP PRINCIPAL ===
 def start_bot(interval=60):
-    """
-    Este bucle se ejecuta en el hilo principal, imprime cada minuto
-    y escribe el precio en data_log.csv.
-    """
     print("🔄 Iniciando bucle de monitoreo (start_bot)…")
     while True:
         try:
             timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[{timestamp}] ⏱ Obteniendo precio…")
+            print(f"\n======= [{timestamp}] INICIO DE ITERACIÓN OBTENIENDO PRECIO =======")
             price = fetch_price()
             if price is not None:
                 log_price(price)
             else:
-                print(f"[{timestamp}] ❌ No se obtuvo precio válido.")
+                print(f"⚠️ A las {timestamp}, no se obtuvo precio válido.")
+            print(f"======= [FIN DE ITERACIÓN] =================================================\n")
         except Exception as ex:
             print("⚠️ Excepción en start_bot:", ex)
         time.sleep(interval)
+
 
 # === EJECUCIÓN PRINCIPAL ===
 if __name__ == "__main__":
