@@ -1,3 +1,4 @@
+```python
 from datetime import datetime, timedelta
 import csv
 import os
@@ -121,9 +122,6 @@ entry_size = 0.0
 stop_loss = 0.0
 take_profit = 0.0
 
-def calculate_SMA(data_list):
-    return sum(data_list) / len(data_list)
-
 def calculate_EMA(closes, period):
     """
     Calcula la EMA de `period` para la lista de precios `closes`.
@@ -143,7 +141,6 @@ def calculate_ATR(klines, period):
     Retorna ATR simple (promedio de TRs) de los últimos `period` periodos.
     """
     tr_list = []
-    # Convertir cadenas a floats
     highs = [float(k["high"]) for k in klines]
     lows = [float(k["low"]) for k in klines]
     closes = [float(k["close"]) for k in klines]
@@ -183,61 +180,46 @@ def strategy_breakout():
         print("⚠️ strategy_breakout: No se obtuvieron suficientes velas para calcular indicadores.", flush=True)
         return
 
-    # Cada elemento k es: { "time": ..., "open": "...", "close": "...", "high": "...", "low": "...", "volume": "..." }
-    # Convertir a listas de floats
     closes = [float(k["close"]) for k in klines]
     highs = [float(k["high"]) for k in klines]
     lows = [float(k["low"]) for k in klines]
     volumes = [float(k["volume"]) for k in klines]
 
-    # Índice del último cierre de vela
     last_idx = -1
 
-    # High_N y Low_N basados en las últimas LOOKBACK velas anteriores al cierre actual
-    # Si klines[-1] es la vela que acaba de cerrar, entonces tomamos klines[-LOOKBACK-1 : -1]
     window_highs = highs[-LOOKBACK-1:-1]
     window_lows = lows[-LOOKBACK-1:-1]
     High_N = max(window_highs)
     Low_N = min(window_lows)
 
-    # Volumen: el más reciente es volumes[-1], promedio de las LOOKBACK anteriores: volumes[-LOOKBACK-1 : -1]
     volume_recent = volumes[-1]
     volume_avg_20h = sum(volumes[-LOOKBACK-1:-1]) / LOOKBACK
 
-    # ATR_14: necesitamos al menos ATR_PERIOD + 1 velas; usamos las últimas ATR_PERIOD+1: klines[-(ATR_PERIOD+1):]
     ATR_14 = calculate_ATR(klines[-(ATR_PERIOD+1):], ATR_PERIOD)
 
-    # EMA_200: usar los últimos EMA_PERIOD+? valores (al menos EMA_PERIOD + (len(closes)-EMA_PERIOD) para recorrido)
-    # Para simplicidad, calculamos el EMA200 usando las últimas EMA_PERIOD+10 velas si hay disponibles; aquí usamos closes[-(EMA_PERIOD+10):]
     closes_for_ema = closes[-(EMA_PERIOD + 10):] if len(closes) >= EMA_PERIOD + 10 else closes[-EMA_PERIOD:]
     EMA_200 = calculate_EMA(closes_for_ema, EMA_PERIOD)
 
-    # Precio de entrada / cierre actual (ultimo close)
     price_now = closes[-1]
-
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Loguear precios e indicadores
     log_price_entry(timestamp, SYMBOL, price_now, High_N, Low_N, ATR_14, volume_recent, volume_avg_20h)
 
-    # ==== SI NO HAY POSICIÓN ABIERTA: evaluar entrada ====
     if not open_position:
         if (
             price_now > High_N
             and price_now > EMA_200
             and volume_recent >= volume_avg_20h * VOLUME_MULTIPLIER
         ):
-            # Calcular stop_loss y take_profit basados en ATR
             stop_loss = Low_N - ATR_14 * ATR_SL_MULT
             take_profit = price_now + ATR_14 * ATR_TP_MULT
 
-            # Calcular tamaño de posición para arriesgar ≈ RISK_PERCENT * balance_usdt
             risk_amount = balance_usdt * RISK_PERCENT
             distance_to_sl = price_now - stop_loss
             if distance_to_sl <= 0:
                 print("⚠️ strategy_breakout: distance_to_sl <= 0, no abro posición.", flush=True)
                 return
-            size = risk_amount / distance_to_sl  # cantidad de SOL a comprar
+            size = risk_amount / distance_to_sl
 
             balance_usdt_pre = balance_usdt
             balance_sol_pre = balance_sol
@@ -262,13 +244,10 @@ def strategy_breakout():
             )
         else:
             print(f"🔍 [{timestamp}] No cumple condiciones de entrada. price={price_now:.4f}, High_N={High_N:.4f}, EMA200={EMA_200:.4f}, vol={volume_recent:.2f}/{volume_avg_20h:.2f}", flush=True)
-
-    # ==== SI YA HAY POSICIÓN ABIERTA: gestionar SL/TP / trailing ====
     else:
         balance_usdt_pre = balance_usdt
         balance_sol_pre = balance_sol
 
-        # Salir por stop-loss
         if price_now <= stop_loss:
             pnl = (price_now - entry_price) * entry_size
             balance_usdt = entry_size * price_now
@@ -289,7 +268,6 @@ def strategy_breakout():
                 pnl=pnl
             )
 
-        # Salir por take-profit
         elif price_now >= take_profit:
             pnl = (price_now - entry_price) * entry_size
             balance_usdt = entry_size * price_now
@@ -310,7 +288,6 @@ def strategy_breakout():
                 pnl=pnl
             )
 
-        # Trailing stop: si price sube +1 ATR sobre entrada, actualizar stop a price_now - ATR*0.75
         else:
             if price_now >= entry_price + ATR_14:
                 new_sl = price_now - ATR_14 * 0.75
@@ -336,7 +313,6 @@ def start_bot():
     y a partir de ahí cada vez que se cierre una hora completa vuelve a llamar a strategy_breakout().
     """
     print("🔄 Iniciando bucle de monitoreo (primera ejecución inmediata)…", flush=True)
-    # 1) Primera llamada a la estrategia sin esperar
     try:
         print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] PRIMERA EJECUCIÓN INMEDIATA =======", flush=True)
         strategy_breakout()
@@ -345,12 +321,10 @@ def start_bot():
             ef.write(f"{datetime.utcnow().isoformat()} - ERROR primera ejecución: {e}\n")
         print(f"⚠️ Excepción en primera ejecución: {e}", flush=True)
 
-    # 2) Dormir hasta el próximo cierre de vela 1h
     delay = seconds_until_next_hour()
     print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela (top of hour).", flush=True)
     time.sleep(delay)
 
-    # 3) Bucle continuo: cada vez que termine la hora, ejecutar estrategia
     while True:
         try:
             print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] NUEVA VELA 1H CERRÓ =======", flush=True)
@@ -363,3 +337,30 @@ def start_bot():
         delay = seconds_until_next_hour()
         print(f"💤 Durmiendo {int(delay)} s hasta el siguiente cierre de vela.", flush=True)
         time.sleep(delay)
+
+if __name__ == "__main__":
+    # 1) Crear data_log.csv si no existe
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "w", newline="") as f:
+            csv.writer(f).writerow(["timestamp", "symbol", "price", "High_N", "Low_N", "ATR_14", "vol_current", "vol_avg_20h"])
+        print(f"🗎 Creado '{LOG_FILE}' con cabecera.", flush=True)
+
+    # 2) Crear trades_log.csv si no existe
+    if not os.path.exists(TRADES_LOG_FILE):
+        with open(TRADES_LOG_FILE, "w", newline="") as f:
+            csv.writer(f).writerow([
+                "timestamp", "action", "symbol", "price", "size", "stop_loss", "take_profit",
+                "balance_usdt_pre", "balance_sol_pre", "balance_usdt_post", "balance_sol_post", "pnl"
+            ])
+        print(f"🗎 Creado '{TRADES_LOG_FILE}' con cabecera.", flush=True)
+
+    # 3) Arrancar el bucle principal de trading en un hilo demonio
+    bot_thread = Thread(target=start_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+
+    # 4) Arrancar Flask en el hilo principal
+    port = int(os.environ.get("PORT", 8080))
+    print(f"✅ Arrancando Flask en el hilo principal en el puerto {port}", flush=True)
+    app.run(host="0.0.0.0", port=port)
+```
