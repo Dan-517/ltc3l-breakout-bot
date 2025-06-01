@@ -1,4 +1,3 @@
-```python
 from datetime import datetime, timedelta
 import csv
 import os
@@ -18,8 +17,8 @@ LOOKBACK = 20                  # Ventana de ruptura: últimas 20 velas
 EMA_PERIOD = 200               # EMA de 200 periodos
 ATR_PERIOD = 14                # ATR de 14 periodos
 VOLUME_MULTIPLIER = 1.2        # Volumen_actual ≥ promedio_20h * 1.2
-ATR_SL_MULT = 0.5              # Stop‐loss = Low_N – ATR_14 * 0.5
-ATR_TP_MULT = 2.0              # Take‐profit = price + ATR_14 * 2.0
+ATR_SL_MULT = 0.5              # Stop-loss = Low_N – ATR_14 * 0.5
+ATR_TP_MULT = 2.0              # Take-profit = price + ATR_14 * 2.0
 RISK_PERCENT = 0.01            # Riesgo 1 % del balance por operación
 
 LOG_FILE = "data_log.csv"
@@ -185,8 +184,6 @@ def strategy_breakout():
     lows = [float(k["low"]) for k in klines]
     volumes = [float(k["volume"]) for k in klines]
 
-    last_idx = -1
-
     window_highs = highs[-LOOKBACK-1:-1]
     window_lows = lows[-LOOKBACK-1:-1]
     High_N = max(window_highs)
@@ -314,7 +311,7 @@ def start_bot():
     """
     print("🔄 Iniciando bucle de monitoreo (primera ejecución inmediata)…", flush=True)
     try:
-        print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] PRIMERA EJECUCIÓN INMEDIATA =======", flush=True)
+        print(f"\n======= [{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] PRIMERA EJECUCIÓN IMMEDIATA =======", flush=True)
         strategy_breakout()
     except Exception as e:
         with open(ERRORS_LOG, "a") as ef:
@@ -363,4 +360,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"✅ Arrancando Flask en el hilo principal en el puerto {port}", flush=True)
     app.run(host="0.0.0.0", port=port)
-```
